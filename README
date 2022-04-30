@@ -1,0 +1,68 @@
+Terraform AWS Individual Modules
+=================================
+## These terraform modules provide basic infrastructure in [AWS](https://aws.amazon.com) environment.
+---------------------------------
+## VPC (Virtual Private Cloud)
+#### "VPC enables you to launch AWS resources into a virtual network"
+
+### VPC
+- Creation of VPC
+- Enable DNS hostnames
+- Enable DNS support
+### Subnet
+- Creation of public subnets
+- Creation of public subnet route table
+- Assocation of subnets to route tables
+### Internet Gateway
+- Creation of internet gateway
+- Association of internet gateway with vpc
+
+---------------------------------------------------------------------
+## EKS (Elastic Kubernetes Service)
+#### "EKS  is managed kubernetes service from the Amazon Web Services (AWS) cloud"
+
+### EKS Cluster
+- Creation of EKS cluser (master node)
+- Creation of IAM roles as required.
+- Creation for security groups for cluster.
+
+### Worker nodes for EKS
+- Creation of worker nodes as required by using tfvars.
+- Creartion of IAM roles and node policies as required.
+- Creation of security groups for workernodes.
+- Configuring outputs with config map and KUBECONFIG.
+
+### Launch Configurations
+- Creation of a Launch Configuration template
+- Took the EKS optimized AMI ID using data module.
+- Specify instance type
+- Adding user data file to execute at initial launch of instance/server
+### Autoscaling Groups
+- Creation of Autoscaling Group
+- Association of launch configuration template
+- Specify desired capacity of servers need to be available
+- Association of availability zones or association of subnets to specify availability zones
+- Specify maximum size of scaling capacity
+- Specify minimum size of scaling capacity
+### RDS
+- Creation of DB instance with required specifications.
+- Added existing subnets to the DB instance.
+- Creation of RDS security groups along with ingress and egress rules.
+
+### Bastion server
+- Creation of bastion server in same VPC.
+- Creation of security groups along with ingress and egress rules.
+
+**NOTE**: Using the resource `tags` functionality we can audit, track and manage resources.
+
+##### The outputs displayed after Terraform Apply can be exported to a `.yaml` format by using command: 
+```bash
+terraform output config_map_aws_auth > config_map_aws_auth.yaml
+```
+##### After connecting to the EKS cluster, apply this above config file to attach worker nodes to EKS cluster.
+```bash
+aws eks update-kubeconfig --name nameofthecluster
+kubectl apply -f  config_map_aws_auth.yaml
+```
+
+
