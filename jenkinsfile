@@ -1,0 +1,180 @@
+#!groovy
+awsS3 = "magento-s3-tf"
+backend_region = "ap-south-1"
+
+environment {
+        TF_HOME = tool('terraform')
+        TF_IN_AUTOMATION = "true"
+        PATH = "$TF_HOME:$PATH"
+        AWS_ACCESS_KEY_ID = credentials('AWS_ACCESS_KEY_ID')
+        AWS_SECRET_ACCESS_KEY = credentials('AWS_SECRET_ACCESS_KEY')
+        TF_VAR_access_key = credentials('AWS_ACCESS_KEY_ID')
+        TF_VAR_secret_key = credentials('AWS_SECRET_ACCESS_KEY')
+  }
+
+node('master') { 
+    step([$class: 'WsCleanup'])
+    def tfImage = docker.image('hashicorp/terraform:0.12.29')
+          stage('Checkout code') {
+                checkout scm
+        }
+    stage('Provisioning infra') {
+             if (params.action  == 'create') {
+                 tfImage.inside ("--entrypoint=''") {
+                   script {
+                        withCredentials([[$class: 'UsernamePasswordMultiBinding',
+                        credentialsId: 'ow-deployer.creds' ,
+                        usernameVariable: 'AWS_ACCESS_KEY_ID',
+                        passwordVariable: 'AWS_SECRET_ACCESS_KEY']]) {
+
+                        sh """
+                            echo "yes" | TF_INPUT="true"  terraform init -backend-config="bucket=${awsS3}" -backend-config="key=${params.stackname}/common-ssm.tfstate" -backend-config="region=${backend_region}" 
+                            terraform plan -out=jiva.plan -var="cluster-name=${params.stackname}" \
+                                                         -var="aws_region=${params.stackregion}"
+                            terraform apply jiva.plan
+                            terraform output config_map_aws_auth > ${WORKSPACE}/config_map_aws_auth.yaml
+                        """
+                       }
+                    }
+            }
+        }
+    }
+    stage('Adding worker nodes'){
+    if (params.action  == 'create') {
+            addWorkernodes()
+        }
+    }
+    stage("Deploying magento") {
+        if (params.action  == 'create') {
+            eksdeploy()
+        }
+    }
+
+    stage("Deploying Elasticsearch") {
+        if (params.action  == 'create') {
+            efkDepoly()
+        }
+    }
+
+    stage('Removing svc in kubernetes'){
+        if (params.action == 'delete') {
+            deletekubesvc()
+        }
+    }
+    stage('Deprovisioning infra') {
+             if (params.action  == 'delete') {
+                 tfImage.inside ("--entrypoint=''") {
+                   script {
+                        withCredentials([[$class: 'UsernamePasswordMultiBinding',
+                        credentialsId: 'ow-deployer.creds',
+                        usernameVariable: 'AWS_ACCESS_KEY_ID',
+                        passwordVariable: 'AWS_SECRET_ACCESS_KEY']]) {
+
+                        sh """
+                            terraform init -backend-config="bucket=${awsS3}" -backend-config="key=${params.stackname}/common-ssm.tfstate" -backend-config="region=${backend_region}" 
+                            terraform destroy -auto-approve
+                        """
+                       }
+                    }
+            }
+        }
+    }
+}
+
+def addWorkernodes(){
+    def k8sImage = docker.image('pahud/eks-kubectl-docker')
+    k8sImage.inside('-u 0:0' + " --entrypoint=''") {
+                withCredentials([[$class: 'UsernamePasswordMultiBinding',
+                        credentialsId: 'ow-deployer.creds',
+                        usernameVariable: 'AWS_ACCESS_KEY_ID',
+                        passwordVariable: 'AWS_SECRET_ACCESS_KEY']])
+            {
+            def clusterName = "${params.stackname}"
+            def clusterRegion = "${params.stackregion}"
+            sh "AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID} AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY} AWS_DEFAULT_REGION=${clusterRegion}  CLUSTER_NAME=${clusterName}"
+            sh "aws eks --region ${clusterRegion} update-kubeconfig --name ${clusterName}"
+            sh 'kubectl apply -f ${WORKSPACE}/config_map_aws_auth.yaml'
+            sh 'kubectl get all'
+            }
+          }
+}
+
+def deletekubesvc(){
+    def k8sImage = docker.image('pahud/eks-kubectl-docker')
+    k8sImage.inside('-u 0:0' + " --entrypoint=''") {
+                withCredentials([[$class: 'UsernamePasswordMultiBinding',
+                        credentialsId: 'ow-deployer.creds',
+                        usernameVariable: 'AWS_ACCESS_KEY_ID',
+                        passwordVariable: 'AWS_SECRET_ACCESS_KEY']])
+            {
+            def clusterName = "${params.stackname}"
+            def clusterRegion = "${params.stackregion}"
+            sh "AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID} AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY} AWS_DEFAULT_REGION=${clusterRegion}  CLUSTER_NAME=${clusterName}"
+            sh "aws eks --region ${clusterRegion} update-kubeconfig --name ${clusterName}"
+            sh "curl -LO https://storage.googleapis.com/kubernetes-release/release/v1.18.0/bin/linux/amd64/kubectl"
+            sh "chmod +x ./kubectl"
+            sh "mv ./kubectl /usr/local/bin/kubectl"
+            sh 'kubectl get all'
+            sh "kubectl delete all --all --all-namespaces"
+            }
+          }
+}
+
+def eksdeploy(){
+    def k8sImage = docker.image('pahud/eks-kubectl-docker')
+    k8sImage.inside('-u 0:0' + " --entrypoint=''") {
+                withCredentials([[$class: 'UsernamePasswordMultiBinding',
+                        credentialsId: 'ow-deployer.creds',
+                        usernameVariable: 'AWS_ACCESS_KEY_ID',
+                        passwordVariable: 'AWS_SECRET_ACCESS_KEY']])
+            {
+            def clusterName = "${params.stackname}"
+            def clusterRegion = "${params.stackregion}"
+            def deploymentName = "${clusterName}-magento-deployment"
+            def dbName = "${clusterName}_rds"
+            sh "AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID} AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY} AWS_DEFAULT_REGION=${clusterRegion}  CLUSTER_NAME=${clusterName}"
+            sh "aws eks --region ${clusterRegion} update-kubeconfig --name ${clusterName}"
+            def dbHost = sh(script: "aws rds --region ${clusterRegion} describe-db-instances --db-instance-identifier ${clusterName}-rds-data | jq '.DBInstances[0].Endpoint.Address'", returnStdout: true).trim()
+            sh "kubectl create -f deployment/magento-service.yaml && [ \$? == 0 ] && sleep 15s || echo 'service already exist'"
+            def lbUrl = sh(script: "kubectl get service magento-service -o=jsonpath='{.status.loadBalancer.ingress[0].hostname}'", returnStdout: true);
+            withCredentials([usernamePassword(credentialsId: 'dbrds', passwordVariable: 'DB_PASSWD', usernameVariable: 'DB_USER')]) {
+            sh 'kubectl create -f deployment/pvc.yaml | echo "already exists"'
+            sh 'chmod +x deployment/deploy.sh'
+            sh "deployment/deploy.sh ${dbHost} ${DB_USER} ${DB_PASSWD} ${deploymentName} ${lbUrl} ${dbName}"
+            def POD = sh(script: "kubectl get pod -l app=magento -o=jsonpath='{.items[0].metadata.name}'", returnStdout: true).trim()
+            sh "chmod +x deployment/status.sh"
+            sh "deployment/status.sh $deploymentName"
+            echo "deployment of Magento is in progress"
+            sleep(time:120,unit:"SECONDS")
+            def magentoAdminURI = sh(script: "kubectl exec -it $POD -- php bin/magento info:adminuri | awk '{print \$3}'", returnStdout:true).trim()
+            sh "kubectl exec -it $POD -- chmod 777 -R var/ pub/ generated/ app/etc/"
+            def URL = 'http://' + lbUrl + magentoAdminURI
+            echo "please use this URL for Magento : $URL"
+            }
+            }
+          }
+}
+
+
+def efkDepoly(){
+    def k8sImage = docker.image('pahud/eks-kubectl-docker')
+    k8sImage.inside('-u 0:0' + " --entrypoint=''") {
+                withCredentials([[$class: 'UsernamePasswordMultiBinding',
+                        credentialsId: 'ow-deployer.creds',
+                        usernameVariable: 'AWS_ACCESS_KEY_ID',
+                        passwordVariable: 'AWS_SECRET_ACCESS_KEY']])
+            {
+            def clusterName = "${params.stackname}"
+            def clusterRegion = "${params.stackregion}"
+            // def esEndPoint = sh(script: "cat ${WORKSPACE}/esep.txt", returnStdout: true).trim()
+            sh """
+                AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID} AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY} AWS_DEFAULT_REGION=${clusterRegion} CLUSTER_NAME=${clusterName}
+                aws eks --region ${clusterRegion} update-kubeconfig --name ${clusterName}
+                chmod +x ${WORKSPACE}/EFK/fluentd/fluent.sh
+                ${WORKSPACE}/EFK/fluentd/fluent.sh ${WORKSPACE} ${clusterName}
+                cd ${WORKSPACE}/EFK
+                kubectl apply -f .
+               """
+            }
+         }
+}
