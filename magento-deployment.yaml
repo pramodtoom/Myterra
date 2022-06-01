@@ -1,0 +1,82 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: magento
+  name: {{STACK_NAME}}
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: magento
+  strategy:
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: magento
+    spec:
+      containers:
+      - image: 882719166652.dkr.ecr.us-east-1.amazonaws.com/i95devege:latest
+        imagePullPolicy: Always
+        name: magento2-ce
+        envFrom:
+        - secretRef:
+            name: db-creds
+        env:
+        - name: URI
+          value: {{LB_URL}}
+        volumeMounts:
+        - mountPath: /var/www/html/magento2/var
+          name: data
+        - mountPath: /var/www/html/magento2/pub/media
+          name: data
+        - mountPath: /var/www/html/magento2/pub/static
+          name: data
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: magento-pvc
+        # env:
+        # - name: MYSQL_HOSTNAME
+        #   value: {{DB_HOST}}
+        # env:
+        # - name: MYSQL_USERNAME
+        #   value: {{DB_USERNAME}}
+        # env:
+        # - name: MYSQL_DATABASE
+        #   value: {{DB_NAME}}
+        # env:
+        # - name: MYSQL_PASSWORD
+        #   value: {{DB_PASSWORD}}
+        #args: ["$(URI) $(MYSQL_HOSTNAME) $(MYSQL_USERNAME) $(MYSQL_DATABASE) $(MYSQL_PASSWORD)"]
+        # lifecycle:
+        #   postStart:
+        #     exec:
+        #       command:
+        #         -  "sh"
+        #         -  "-c"
+        #         -  >
+        #            apt-get update && apt-get install default-mysql-client -y;
+        #            bin/magento setup:install --base-url=http://{{LB}} --db-host=$DB_HOST --db-name=$DB_NAME --db-user=$DB_USERNAME --db-password=$DB_PASSWORD > installation.txt &&
+        #            bin/magento setup:store-config:set --base-url=http://{{LB}} &&
+        #            chmod -R 777 var/* generated/* pub/static/
+        #imagePullPolicy: Always
+        # name: magento2-ce
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: db-creds
+type: Opaque
+stringData:
+  MYSQL_USERNAME: {{DB_USERNAME}}
+  MYSQL_PASSWORD: {{DB_PASSWORD}}
+  MYSQL_HOSTNAME: {{DB_HOST}}
+  MYSQL_DATABASE: {{DB_NAME}}
+
